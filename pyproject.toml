@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nightguard-desktop"
+dynamic = ["version"]
+description = "A quiet, bilingual, local-first bedtime guardian for Windows, Linux and macOS."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["PySide6>=6.8,<6.10", "platformdirs>=4,<5", "packaging>=24,<26"]
+
+[project.urls]
+Repository = "https://github.com/yunyuyuan/night-guard"
+Releases = "https://github.com/yunyuyuan/night-guard/releases"
+
+[project.optional-dependencies]
+dev = ["pytest>=8,<9", "pytest-qt>=4,<5", "pyinstaller>=6,<7"]
+
+[project.gui-scripts]
+nightguard = "nightguard.app:main"
+
+[tool.setuptools.packages.find]
+include = ["nightguard*"]
+
+[tool.setuptools.dynamic]
+version = {attr = "nightguard.__version__"}
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+qt_api = "pyside6"

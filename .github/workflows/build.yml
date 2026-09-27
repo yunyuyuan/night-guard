@@ -1,0 +1,124 @@
+name: Build and Release NightGuard
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightguard-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+jobs:
+  metadata:
+    name: Validate version
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install packaging==25.0
+      - name: Read and validate tag version
+        id: version
+        env:
+          RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+        run: python tools/release.py metadata --tag "$RELEASE_TAG"
+
+  build:
+    name: Build ${{ matrix.label }}
+    needs: metadata
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            label: linux-x86_64
+            executable: dist/NightGuard/NightGuard
+          - os: windows-2022
+            label: windows-x86_64
+            executable: dist/NightGuard/NightGuard.exe
+          - os: macos-15-intel
+            label: macos-x86_64
+            executable: dist/NightGuard.app/Contents/MacOS/NightGuard
+          - os: macos-15
+            label: macos-arm64
+            executable: dist/NightGuard.app/Contents/MacOS/NightGuard
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    env:
+      QT_QPA_PLATFORM: offscreen
+      NIGHTGUARD_UPDATE_REPO: ${{ github.repository }}
+      BUILD_VERSION: ${{ needs.metadata.outputs.version }}
+      APP_EXECUTABLE: ${{ matrix.executable }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements*.txt
+      - name: Linux Qt libraries
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y libegl1 libxcb-cursor0 libxkbcommon-x11-0 libxcb-icccm4 libxcb-keysyms1 libxcb-shape0 libxcb-xinerama0
+      - name: Install dependencies
+        run: python -m pip install -r requirements-dev.txt
+      - name: Apply tag version to app and bundle
+        run: python tools/release.py prepare --version "$BUILD_VERSION"
+      - name: Automated tests (no real shutdowns)
+        run: python -m pytest -q
+      - name: Build native application and checksum
+        run: python tools/build.py
+      - name: Packaged process smoke test (demo only)
+        run: python tools/smoke_process.py "$APP_EXECUTABLE"
+      - name: Upload verified package
+        uses: actions/upload-artifact@v4
+        with:
+          name: NightGuard-${{ matrix.label }}
+          path: artifacts/*
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+
+  release:
+    name: Publish GitHub Release
+    needs: [metadata, build]
+    # Main/PR/manual branch builds never publish. A pushed v* tag is the trigger.
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      BUILD_VERSION: ${{ needs.metadata.outputs.version }}
+      RELEASE_TAG: ${{ github.ref_name }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install packaging==25.0
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: NightGuard-*
+          path: release-assets
+          merge-multiple: true
+      - name: Verify all four archives and combine checksums
+        run: python tools/release.py collect --version "$BUILD_VERSION" --directory release-assets
+      - name: Upload all assets then publish the release
+        run: python tools/release.py publish --tag "$RELEASE_TAG" --repository "$GITHUB_REPOSITORY" --directory release-assets
